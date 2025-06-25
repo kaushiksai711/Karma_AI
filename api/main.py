@@ -9,8 +9,6 @@ from pathlib import Path
 from reward_engine import RewardEngine, get_reward_engine
 
 # App configuration
-SECRET_KEY = "your-secret-key-here"
-ALGORITHM = "HS256"
 CONFIG_FILE = Path("config.json")
 
 # Configuration Models
