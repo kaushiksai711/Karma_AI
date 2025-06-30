@@ -16,7 +16,7 @@ Karma Surprise Box is an AI-driven microservice that generates hidden rewards fo
 
 ### High-Level Architecture
 
-![alt text](workflow.png)
+![alt text](architecture.png)
 
 ## System Design
 
