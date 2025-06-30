@@ -1,5 +1,5 @@
 {
-  "reward_probability_threshold": 0.85,
+  "reward_probability_threshold": 0.9,
   "reward_rules": {
     "streak_engager": {
       "conditions": [

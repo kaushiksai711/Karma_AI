@@ -20,23 +20,24 @@ class DatabaseManager:
     
     def _init_db(self):
         """Initialize the database with required tables."""
-        with self._get_connection() as conn:
+        with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            # Create rewarded_users table if it doesn't exist
+            # Create new table with updated schema
             cursor.execute('''
-                CREATE TABLE IF NOT EXISTS rewarded_users (
+                CREATE TABLE IF NOT EXISTS user_rewards (
                     date TEXT NOT NULL,
                     user_id TEXT NOT NULL,
                     box_type TEXT NOT NULL,
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (date, user_id, box_type)
+                    PRIMARY KEY (date, user_id)
                 )
             ''')
             conn.commit()
     
     def add_rewarded_user(self, date: str, user_id: str, box_type: str) -> None:
         """
-        Add a user to the rewarded users for a specific date and box type.
+        Add a user to the rewarded users for a specific date.
+        If user already has a reward for this date, it will be updated.
         
         Args:
             date: Date string in YYYY-MM-DD format
@@ -45,15 +46,11 @@ class DatabaseManager:
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            try:
-                cursor.execute('''
-                    INSERT INTO rewarded_users (date, user_id, box_type)
+            cursor.execute('''
+                    INSERT INTO user_rewards (date, user_id, box_type)
                     VALUES (?, ?, ?)
                 ''', (date, str(user_id), box_type))
-                conn.commit()
-            except sqlite3.IntegrityError:
-                # Entry already exists, this is fine
-                pass
+            conn.commit()
     
     def is_user_rewarded(self, date: str, user_id: str, box_type: str) -> bool:
         """
@@ -67,14 +64,34 @@ class DatabaseManager:
         Returns:
             bool: True if user was already rewarded, False otherwise
         """
+        reward = self.get_user_reward(date, user_id)
+        return reward is not None and reward['box_type'] == box_type
+        
+    def get_user_reward(self, date: str, user_id: str) -> Optional[dict]:
+        """
+        Get the reward details for a user on a specific date.
+        
+        Args:
+            date: Date string in YYYY-MM-DD format
+            user_id: User ID
+            
+        Returns:
+            dict: Reward details or None if no reward exists
+        """
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT 1 FROM rewarded_users 
-                WHERE date = ? AND user_id = ? AND box_type = ?
+                SELECT box_type, timestamp FROM user_rewards 
+                WHERE date = ? AND user_id = ?
                 LIMIT 1
-            ''', (date, str(user_id), box_type))
-            return cursor.fetchone() is not None
+            ''', (date, str(user_id)))
+            row = cursor.fetchone()
+            if row:
+                return {
+                    'box_type': row[0],
+                    'timestamp': row[1]
+                }
+            return None
     
     def get_rewarded_users(self, date: str, box_type: Optional[str] = None) -> Set[str]:
         """
@@ -91,12 +108,12 @@ class DatabaseManager:
             cursor = conn.cursor()
             if box_type:
                 cursor.execute('''
-                    SELECT user_id FROM rewarded_users 
+                    SELECT user_id FROM user_rewards 
                     WHERE date = ? AND box_type = ?
                 ''', (date, box_type))
             else:
                 cursor.execute('''
-                    SELECT user_id FROM rewarded_users 
+                    SELECT user_id FROM user_rewards 
                     WHERE date = ?
                 ''', (date,))
             
@@ -113,7 +130,7 @@ class DatabaseManager:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                DELETE FROM rewarded_users 
+                DELETE FROM user_rewards 
                 WHERE date < date(?, ?)
             ''', (cutoff_date, f'-{days_to_keep} days'))
             conn.commit()

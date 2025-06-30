@@ -5,9 +5,12 @@ import pandas as pd
 import random
 from datetime import datetime
 import hashlib
-from typing import Dict, List, Tuple, Optional, Any, Union
+from typing import Dict,Optional, Any
 import re
+import logging
 
+# Set up logging
+logger = logging.getLogger(__name__)
 # Define MODEL_FEATURE_KEYS to ensure consistency
 MODEL_FEATURE_KEYS = ["login_streak", "posts_created", "comments_written", "upvotes_received", 
                      "quizzes_completed", "buddies_messaged", "karma_spent", "karma_earned_today"]
@@ -80,7 +83,7 @@ class RewardEngine:
                 # Parse the condition
                 parsed = parse_condition(condition)
                 if parsed is None:
-                    print(f"Failed to parse condition: {condition}")
+                    logger.error(f"Failed to parse condition: {condition}")
                     return False
                     
                 # Evaluate the condition
@@ -88,11 +91,21 @@ class RewardEngine:
                     return False
                     
             except Exception as e:
-                print(f"Error evaluating condition '{condition}': {str(e)}")
+                logger.error(f"Error evaluating condition '{condition}': {str(e)}")
                 return False
                 
         return True
     def get_temporal_multiplier(self,day_of_week, month):
+        """
+        Calculate the temporal multiplier based on the day of the week and month.
+        
+        Args:
+            day_of_week (int): Day of the week (0-6)
+            month (int): Month of the year (1-12)
+        
+        Returns:
+            float: The temporal multiplier value
+        """
         TEMPORAL_TRENDS = self.config["temporal_trends"]
         base_mult = 1.2 if day_of_week in [5, 6] else 1.0
         seasonal_mult = TEMPORAL_TRENDS.get("seasonal_multipliers", {}).get(str(month), 1.0)
@@ -138,7 +151,17 @@ class RewardEngine:
         return best_matches[0][0]
     
     def _calculate_rarity(self, box_type, prediction_probability, seed=None):
-        """Calculate the rarity of the reward based on probability and box type."""
+        """
+        Calculate the rarity of the reward based on probability and box type.
+        
+        Args:
+            box_type: Type of the reward box
+            prediction_probability: Model's confidence in the reward (0-1)
+            seed: Optional seed for reproducibility
+            
+        Returns:
+            str: Rarity level (common, rare, elite, legendary)
+        """
         if box_type not in self.config['box_types']:
             box_type = 'mystery'
             
@@ -156,7 +179,17 @@ class RewardEngine:
         return rng.choices(rarities, weights=adjusted_weights, k=1)[0]
     
     def _calculate_reward_karma(self, box_type, rarity, metrics):
-        """Calculate the karma reward based on box type, rarity, and user metrics."""
+        """
+        Calculate the karma reward based on box type, rarity, and user metrics.
+        
+        Args:
+            box_type: Type of the reward box
+            rarity: Rarity level of the reward
+            metrics: Dictionary containing user metrics
+            
+        Returns:
+            int: Calculated karma reward
+        """
         if box_type not in self.config['box_types']:
             box_type = 'mystery'
             
@@ -181,7 +214,16 @@ class RewardEngine:
         return max(self.config['karma_min'], min(self.config['karma_max'], karma))
 
     def _get_deterministic_seed(self, user_id: str, date: str) -> int:
-        """Generate a deterministic seed based on user_id and date."""
+        """
+        Generate a deterministic seed based on user_id and date.
+        
+        Args:
+            user_id (str): The ID of the user
+            date (str): The date in YYYY-MM-DD format
+            
+        Returns:
+            int: A deterministic seed value
+        """
         seed_str = f"{user_id}_{date}"
         hash_value = hashlib.md5(seed_str.encode()).hexdigest()
         return int(hash_value[:8], 16)
@@ -189,6 +231,13 @@ class RewardEngine:
     def _prepare_features(self, daily_metrics: Dict[str, Any], date: str) -> np.ndarray:
         """
         Prepare the feature vector for model prediction, including raw, rule-based, and temporal features.
+        
+        Args:
+            daily_metrics (dict): Dictionary of user metrics
+            date (str): Date in YYYY-MM-DD format
+            
+        Returns:
+            pd.DataFrame: The prepared feature vector
         """
         # Create DataFrame with raw features and ensure feature names are preserved
         features = {key: [daily_metrics.get(key, 0)] for key in MODEL_FEATURE_KEYS}
@@ -217,7 +266,17 @@ class RewardEngine:
                                daily_metrics: Dict[str, Any], 
                                prediction: int,
                                prediction_probability: float) -> Optional[Dict[str, Any]]:
-        """Find the condition that best matches the user's metrics."""
+        """
+        Find the condition that best matches the user's metrics.
+        
+        Args:
+            daily_metrics (dict): Dictionary of user metrics
+            prediction (int): Model prediction (0 or 1)
+            prediction_probability (float): Model's confidence in the prediction
+            
+        Returns:
+            dict: The matching condition dictionary, or None if no match found
+        """
         # Filter conditions by prediction label
         matching_conditions = [
             cond for cond in self.conditions 
@@ -286,7 +345,7 @@ class RewardEngine:
             box_type = self._determine_box_type(metrics_with_meta)
             
             # Check if user was already rewarded today for this box type
-            today = datetime.now().strftime('%Y-%m-%d')
+            today = date
             if self.db_manager.is_user_rewarded(today, user_id, box_type):
                 return {
                     "user_id": user_id,
@@ -333,7 +392,7 @@ class RewardEngine:
             }
             
         except Exception as e:
-            print(f"Error in check_surprise_box: {str(e)}")
+            logger.error(f"Error in check_surprise_box: {str(e)}")
             return {
                 "user_id": user_id,
                 "surprise_unlocked": False,
@@ -346,21 +405,29 @@ def load_model():
     try:
         with open('compressed_classifier_bal_1.pkl', 'rb') as f:
             model = joblib.load(f)
-            print('model loaded,comaomd')
+            print('model loaded')
         return model
-    # try:
-    #     with open('classifier.pkl', 'rb') as f:
-    #         model = joblib.load(f)
-    #         print('model loaded')
-    #     return model
     except Exception as e:
-        print(f"Error loading model: {e}")
+        logger.error(f"Error loading model: {e}")
         return None
 
 def get_reward_engine():
     """Get or create the reward engine singleton."""
     return RewardEngine()
 def tokenize_condition(condition_str):
+    """
+    Tokenize a condition string into a list of tokens for parsing.
+    
+    Args:
+        condition_str (str): The condition string to tokenize (e.g., "login_streak>3")
+        
+    Returns:
+        list: A list of tokens representing the condition components.
+        
+    Example:
+        >>> tokenize_condition("login_streak>3")
+        ['login_streak', '>', '3']
+    """
     # Pattern to match variables, operators, parentheses, and logical operators
     pattern = r'(\w+)|(>=|<=|==|!=|>|<)|(\(|\))|(and|or|not\b)|(\d+)'
     # Find all matches and filter out empty groups
@@ -373,6 +440,22 @@ def tokenize_condition(condition_str):
     return result
 
 def parse_atomic_condition(tokens, start_idx):
+    """
+    Parse an atomic condition from a list of tokens.
+    
+    Args:
+        tokens (list): List of tokens from tokenize_condition()
+        start_idx (int): Starting index in the tokens list
+        
+    Returns:
+        tuple: A tuple containing (parsed_condition, next_index) where:
+            - parsed_condition: A tuple (operator, metric, value) or None if parsing fails
+            - next_index: The index to continue parsing from
+            
+    Example:
+        >>> parse_atomic_condition(['login_streak', '>', '3'], 0)
+        (('>', 'login_streak', 3), 3)
+    """
     if start_idx + 2 >= len(tokens):
         return None, start_idx
     var_token = tokens[start_idx]
@@ -385,6 +468,20 @@ def parse_atomic_condition(tokens, start_idx):
     return None, start_idx
 
 def parse_condition_recursive(tokens, start_idx=0):
+    """
+    Recursively parse a condition with possible parentheses and logical operators.
+    
+    Args:
+        tokens (list): List of tokens from tokenize_condition()
+        start_idx (int, optional): Starting index in the tokens list. Defaults to 0.
+        
+    Returns:
+        tuple: A tuple containing (parsed_expression, next_index)
+        
+    Note:
+        Supports the following operators: ! (NOT), & (AND), | (OR)
+        Handles parenthesized expressions and operator precedence.
+    """
     left_expr, idx = parse_term(tokens, start_idx)
     while idx < len(tokens):
         if tokens[idx] == 'or':
@@ -416,6 +513,15 @@ def parse_factor(tokens, start_idx):
         return atomic, idx
 
 def parse_condition(condition_str):
+    """
+    Parse a condition string into a parsed expression.
+    
+    Args:
+        condition_str (str): The condition string to parse
+    
+    Returns:
+        tuple: The parsed expression, or None if parsing fails
+    """
     if not condition_str.strip():
         return None
     tokens = tokenize_condition(condition_str)
@@ -425,10 +531,30 @@ def parse_condition(condition_str):
         expr, _ = parse_condition_recursive(tokens)
         return expr
     except Exception as e:
-        print(f"Error parsing condition '{condition_str}': {e}")
+        logger.error(f"Error parsing condition '{condition_str}': {e}")
         return None
 
 def evaluate_expression(expr, metrics):
+    """    
+    Evaluate a parsed expression against a dictionary of metrics.
+    
+    Args:
+        expr: The parsed expression (from parse_condition)
+        metrics (dict): Dictionary of metric names to values
+        
+    Returns:
+        bool: The boolean result of evaluating the expression
+        
+    Raises:
+        ValueError: If the expression is invalid or contains an unknown operator
+        
+    Examples:
+        >>> evaluate_expression(('>', 'login_streak', 3), {'login_streak': 5})
+        True
+        >>> evaluate_expression(('and', ('>', 'login_streak', 3), ('>=', 'posts_created', 1)),
+        ...                    {'login_streak': 5, 'posts_created': 0})
+        False
+    """
     if isinstance(expr, tuple) and len(expr) == 3:
         if expr[0] in MODEL_FEATURE_KEYS:
             variable, operator, value = expr
@@ -454,12 +580,26 @@ def evaluate_expression(expr, metrics):
     raise ValueError(f"Invalid expression: {expr}")
 
 def check_condition(metrics, parsed_condition):
+    """
+    Check if a parsed condition is satisfied by the given metrics.
+    
+    Args:
+        metrics (dict): Dictionary of metric names to values
+        parsed_condition: The parsed condition (from parse_condition)
+        
+    Returns:
+        bool: True if the condition is satisfied, False otherwise or if an error occurs
+        
+    Note:
+        This is a safe wrapper around evaluate_expression that catches and logs any
+        exceptions, returning False in case of errors.
+    """
     if parsed_condition is None:
         return False
     try:
         return evaluate_expression(parsed_condition, metrics)
     except Exception as e:
-        print(f"Error evaluating condition: {e}")
+        logger.error(f"Error evaluating condition: {e}")
         return False
 def load_conditions():
         conditions = []
@@ -468,7 +608,7 @@ def load_conditions():
             for _, row in reader.iterrows():
                 parsed_condition = parse_condition(row["condition"])
                 if parsed_condition is None:
-                    print(f"Warning: Could not parse condition: '{row['condition']}'")
+                    logger.warning(f"Could not parse condition: '{row['condition']}'")
                 row_dict = row.to_dict()
                 row_dict["parsed_condition"] = parsed_condition
                 conditions.append(row_dict)

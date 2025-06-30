@@ -1,12 +1,27 @@
-from fastapi import FastAPI, HTTPException, status
+import logging
+import sys
+from fastapi import FastAPI, HTTPException, status, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List, Union
 from datetime import datetime, UTC
 import json
 from pathlib import Path
 
-from reward_engine import RewardEngine, get_reward_engine
+from reward_engine import RewardEngine, get_reward_engine, logger as reward_engine_logger
+
+# Configure root logger
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+
+# Get logger for this module
+logger = logging.getLogger(__name__)
 
 # App configuration
 CONFIG_FILE = Path("config.json")
@@ -79,14 +94,14 @@ class UserInDB(User):
     hashed_password: str
 
 class DailyMetrics(BaseModel):
-    login_streak: int = 0
-    posts_created: int = 0
-    comments_written: int = 0
-    upvotes_received: int = 0
-    quizzes_completed: int = 0
-    buddies_messaged: int = 0
-    karma_spent: int = 0
-    karma_earned_today: int = 0
+    login_streak: int = Field(..., ge=0, description="Number of consecutive days the user has logged in")
+    posts_created: int = Field(..., ge=0, description="Number of posts created today")
+    comments_written: int = Field(..., ge=0, description="Number of comments written today")
+    upvotes_received: int = Field(..., ge=0, description="Number of upvotes received today")
+    quizzes_completed: int = Field(..., ge=0, description="Number of quizzes completed today")
+    buddies_messaged: int = Field(..., ge=0, description="Number of buddies messaged today")
+    karma_spent: int = Field(..., ge=0, description="Amount of karma spent today")
+    karma_earned_today: int = Field(..., ge=0, description="Amount of karma earned today")
 
 class RewardRequest(BaseModel):
     user_id: str
@@ -151,8 +166,24 @@ def get_reward_engine_dependency() -> RewardEngine:
 app = FastAPI(
     title="Karma Reward Engine API",
     description="API for Karma Reward Engine that determines surprise box rewards",
-    version="1.0.0"
+    version="1.0.0",
+    debug=True
 )
+
+# Add middleware for request logging
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    logger.info(f"Request: {request.method} {request.url}")
+    try:
+        response = await call_next(request)
+        logger.info(f"Response: {response.status_code}")
+        return response
+    except Exception as e:
+        logger.error(f"Unhandled exception: {str(e)}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal server error"}
+        )
 
 # Add CORS middleware
 app.add_middleware(
@@ -168,6 +199,12 @@ reward_engine = get_reward_engine()
 
 # API endpoints
 
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 @app.post("/check-surprise-box", response_model=SurpriseBoxResponse)
 async def check_surprise_box(request: RewardRequest):
     """
@@ -177,19 +214,33 @@ async def check_surprise_box(request: RewardRequest):
     - **date**: Date in YYYY-MM-DD format
     - **daily_metrics**: Dictionary containing the user's daily activity metrics
     
-    Returns reward details including qualification status, karma points, and box details.
+    Returns:
+        SurpriseBoxResponse: Reward details including qualification status, karma points, and box details.
+        
+    Raises:
+        HTTPException: If there's an error processing the request
     """
     # Validate date format (YYYY-MM-DD)
     try:
         datetime.strptime(request.date, "%Y-%m-%d")
-    except ValueError:
+    except ValueError as e:
+        error_msg = f"Invalid date format: {request.date}. Expected YYYY-MM-DD"
+        logger.error(error_msg)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid date format. Expected YYYY-MM-DD"
-        )
+            detail=error_msg
+        ) from e
+        
+    # Convert daily_metrics to dict
+    metrics_dict = request.daily_metrics.dict()
+    
+    # Log the request
+    logger.info(f"Processing request for user {request.user_id} on {request.date}")
+    logger.debug(f"Metrics: {metrics_dict}")
+    
     try:
-        # Convert daily_metrics to dict for the reward engine
-        metrics_dict = request.daily_metrics.dict()
+        # Get reward engine instance
+        reward_engine = get_reward_engine()
         
         # Check for surprise box
         result = reward_engine.check_surprise_box(
@@ -198,33 +249,32 @@ async def check_surprise_box(request: RewardRequest):
             daily_metrics=metrics_dict
         )
         
-        # Ensure all required fields are present
-        if not result.get("user_id"):
-            result["user_id"] = request.user_id
+        # Log the result
+        # if result.get("surprise_unlocked", False):
+        #     logger.info(f"Reward granted to user {request.user_id}: {result}")
+        # else:
+        #     logger.info(f"No reward for user {request.user_id}: {result.get('reason', 'No reason provided')}")
+            
+        return result
         
-        result.setdefault("surprise_unlocked", False)
-        result.setdefault("reason", "No activity matched")
-        result.setdefault("rarity", "common")
-        result.setdefault("box_type", "mystery")
-        result.setdefault("status", "missed" if not result["surprise_unlocked"] else "delivered")
-        
-        # Remove any extra fields that might cause issues
-        allowed_fields = [
-            "user_id", "surprise_unlocked", "reward_karma", "reason",
-            "rarity", "box_type", "status"
-        ]
-        return {k: v for k, v in result.items() if k in allowed_fields}
-        
-    except ValueError as ve:
+    except ValueError as e:
+        error_msg = str(e)
+        logger.error(f"Validation error: {error_msg}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid input: {str(ve)}"
-        )
+            detail=error_msg
+        ) from e
     except Exception as e:
+        error_msg = "An unexpected error occurred while processing your request"
+        logger.error(
+            f"{error_msg} for user {request.user_id}",
+            exc_info=True,
+            extra={"user_id": request.user_id, "date": request.date}
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error processing surprise box check: {str(e)}"
-        )
+            detail=error_msg
+        ) from e
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
