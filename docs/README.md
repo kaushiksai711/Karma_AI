@@ -76,11 +76,7 @@ Karma Surprise Box is an AI-driven microservice that generates hidden rewards fo
 docker build -t karma-surprise-box .
 
 # Run the container
-docker run -d \
-  -p 8000:8000 \
-  -v karma_data:/data \
-  --name karma-surprise-box \
-  karma-surprise-box
+docker run -p 8000:8000 karma-surprise-box
 ```
 
 
